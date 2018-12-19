@@ -7,8 +7,9 @@ from xdist.workermanage import parse_spec_config
 from xdist.report import report_collection_diff
 
 
-class LoadScheduling(object):
+class DedicatedLoadScheduling(object):
     """Implement load scheduling across nodes.
+
     This distributes the tests collected across all nodes so each test
     is run just once.  All nodes collect and submit the test suite and
     when all collections are received it is verified they are
@@ -17,29 +18,38 @@ class LoadScheduling(object):
     an item, it calls ``.mark_test_complete()`` which will trigger the
     scheduler to assign more tests if the number of pending tests for
     the node falls below a low-watermark.
+
     When created, ``numnodes`` defines how many nodes are expected to
     submit a collection. This is used to know when all nodes have
     finished collection or how large the chunks need to be created.
+
     Attributes:
+
     :numnodes: The expected number of nodes taking part.  The actual
        number of nodes will vary during the scheduler's lifetime as
        nodes are added by the DSession as they are brought up and
        removed either because of a dead node or normal shutdown.  This
        number is primarily used to know when the initial collection is
        completed.
+
     :node2collection: Map of nodes and their test collection.  All
        collections should always be identical.
+
     :node2pending: Map of nodes and the indices of their pending
        tests.  The indices are an index into ``.pending`` (which is
        identical to their own collection stored in
        ``.node2collection``).
+
     :collection: The one collection once it is validated to be
        identical between all the nodes.  It is initialised to None
        until ``.schedule()`` is called.
+
     :pending: List of indices of globally pending tests.  These are
        tests which have not yet been allocated to a chunk for a node
        to process.
+
     :log: A py.log.Producer instance.
+
     :config: Config object, used for handling hooks.
     """
 
@@ -47,7 +57,10 @@ class LoadScheduling(object):
         self.numnodes = len(parse_spec_config(config))
         self.node2collection = {}
         self.node2pending = {}
+        self.single_collection = {}
         self.pending = []
+        self.pending_singles = []
+        self.reserved_node = None
         self.collection = None
         if log is None:
             self.log = Producer("loadsched")
@@ -63,6 +76,7 @@ class LoadScheduling(object):
     @property
     def collection_is_completed(self):
         """Boolean indication initial test collection is complete.
+
         This is a boolean indicating all initial participating nodes
         have finished collection.  The required number of initial
         nodes is defined by ``.numnodes``.
@@ -84,6 +98,7 @@ class LoadScheduling(object):
     @property
     def has_pending(self):
         """Return True if there are pending test items
+
         This indicates that collection has finished and nodes are
         still processing test items, so this can be thought of as
         "the scheduler is active".
@@ -97,19 +112,23 @@ class LoadScheduling(object):
 
     def add_node(self, node):
         """Add a new node to the scheduler.
+
         From now on the node will be allocated chunks of tests to
         execute.
+
         Called by the ``DSession.worker_workerready`` hook when it
         successfully bootstraps a new node.
         """
         assert node not in self.node2pending
         self.node2pending[node] = []
 
-    def add_node_collection(self, node, collection):
+    def add_node_collection(self, node, collection, single_ids):
         """Add the collected test items from a node
+
         The collection is stored in the ``.node2collection`` map.
         Called by the ``DSession.worker_collectionfinish`` hook.
         """
+        self.single_collection = single_ids
         assert node in self.node2pending
         if self.collection_is_completed:
             # A new node has been added later, perhaps an original one died.
@@ -127,8 +146,10 @@ class LoadScheduling(object):
 
     def mark_test_complete(self, node, item_index, duration=0):
         """Mark test item as completed by node
+
         The duration it took to execute the item is used as a hint to
         the scheduler.
+
         This is called by the ``DSession.worker_testreport`` hook.
         """
         self.node2pending[node].remove(item_index)
@@ -136,6 +157,7 @@ class LoadScheduling(object):
 
     def check_schedule(self, node, duration=0):
         """Maybe schedule new items on the node
+
         If there are any globally pending nodes left then this will
         check if the given node should be given any more tests.  The
         ``duration`` of the last test is optionally used as a
@@ -167,13 +189,16 @@ class LoadScheduling(object):
 
     def remove_node(self, node):
         """Remove a node from the scheduler
+
         This should be called either when the node crashed or at
         shutdown time.  In the former case any pending items assigned
         to the node will be re-scheduled.  Called by the
         ``DSession.worker_workerfinished`` and
         ``DSession.worker_errordown`` hooks.
+
         Return the item which was being executing while the node
         crashed or None if the node has no more pending items.
+
         """
         pending = self.node2pending.pop(node)
         if not pending:
@@ -188,10 +213,12 @@ class LoadScheduling(object):
 
     def schedule(self):
         """Initiate distribution of the test collection
+
         Initiate scheduling of the items across the nodes.  If this
         gets called again later it behaves the same as calling
         ``.check_schedule()`` on all nodes so that newly added nodes
         will start to be used.
+
         This is called by the ``DSession.worker_collectionfinish`` hook
         if ``.collection_is_completed`` is True.
         """
@@ -210,7 +237,13 @@ class LoadScheduling(object):
 
         # Collections are identical, create the index of pending items.
         self.collection = list(self.node2collection.values())[0]
-        self.pending[:] = range(len(self.collection))
+
+        for index, value in enumerate(self.collection):
+            self.pending.append(index)
+            for single_item in self.single_collection:
+                if value == single_item:
+                    self.pending_singles.append(index)
+
         if not self.collection:
             return
 
@@ -221,6 +254,7 @@ class LoadScheduling(object):
 
         # distribute tests round-robin up to the batch size
         # (or until we run out)
+        self.reserved_node = self.nodes[0]
         nodes = cycle(self.nodes)
         for i in range(initial_batch):
             self._send_tests(next(nodes), 1)
@@ -231,14 +265,20 @@ class LoadScheduling(object):
                 node.shutdown()
 
     def _send_tests(self, node, num):
-        tests_per_node = self.pending[:num]
-        if tests_per_node:
-            del self.pending[:num]
-            self.node2pending[node].extend(tests_per_node)
-            node.send_runtest_some(tests_per_node)
+        if node == self.reserved_node and self.pending_singles:
+            tests_per_node = self.pending_singles[:num]
+        else:
+            tests_per_node = list(set(self.pending) - set(self.pending_singles))[:num]
+
+        self.pending_singles = list(set(self.pending_singles) - set(tests_per_node))
+        self.pending = list(set(self.pending) - set(tests_per_node))
+
+        self.node2pending[node].extend(tests_per_node)
+        node.send_runtest_some(tests_per_node)
 
     def _check_nodes_have_same_collection(self):
         """Return True if all nodes have collected the same items.
+
         If collections differ, this method returns False while logging
         the collection differences and posting collection errors to
         pytest_collectreport hook.

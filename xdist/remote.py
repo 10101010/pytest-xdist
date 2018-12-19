@@ -5,7 +5,6 @@
     on the rest of the xdist code.  This means that the xdist-plugin
     needs not to be installed in remote environments.
 """
-
 import sys
 import os
 import time
@@ -87,10 +86,26 @@ class WorkerInteractor(object):
         )
 
     def pytest_collection_finish(self, session):
+        ids = [item.nodeid for item in session.items]
+
+        single_ids = set()
+
+        for item in session.items:
+            for marker in item.own_markers:
+                if marker.name is 'single':
+                    single_ids.add(item.nodeid)
+
+            for keyword in item.keywords:
+                if keyword is 'single':
+                    single_ids.add(item.nodeid)
+
+        single_ids = list(single_ids)
+
         self.sendevent(
             "collectionfinish",
             topdir=str(session.fspath),
-            ids=[item.nodeid for item in session.items],
+            ids=ids,
+            single_ids=single_ids
         )
 
     def pytest_runtest_logstart(self, nodeid, location):

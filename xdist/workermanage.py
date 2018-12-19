@@ -318,7 +318,7 @@ class WorkerController(object):
                     rep.item_index = item_index
                 self.notify_inproc(eventname, node=self, rep=rep)
             elif eventname == "collectionfinish":
-                self.notify_inproc(eventname, node=self, ids=kwargs["ids"])
+                self.notify_inproc(eventname, node=self, ids=kwargs["ids"], single_ids=kwargs["single_ids"])
             elif eventname == "runtest_protocol_complete":
                 self.notify_inproc(eventname, node=self, **kwargs)
             elif eventname == "logwarning":

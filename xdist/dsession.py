@@ -7,6 +7,7 @@ from xdist.scheduler import (
     LoadScheduling,
     LoadScopeScheduling,
     LoadFileScheduling,
+    DedicatedLoadScheduling
 )
 
 
@@ -101,6 +102,7 @@ class DSession(object):
             "load": LoadScheduling,
             "loadscope": LoadScopeScheduling,
             "loadfile": LoadFileScheduling,
+            "dedicated": DedicatedLoadScheduling
         }
         return schedulers[dist](config, log)
 
@@ -207,7 +209,7 @@ class DSession(object):
             self._clone_node(node)
         self._active_nodes.remove(node)
 
-    def worker_collectionfinish(self, node, ids):
+    def worker_collectionfinish(self, node, ids, single_ids):
         """worker has finished test collection.
 
         This adds the collection for this node to the scheduler.  If
@@ -222,7 +224,7 @@ class DSession(object):
         # tell session which items were effectively collected otherwise
         # the master node will finish the session with EXIT_NOTESTSCOLLECTED
         self._session.testscollected = len(ids)
-        self.sched.add_node_collection(node, ids)
+        self.sched.add_node_collection(node, ids, single_ids)
         if self.terminal:
             self.trdist.setstatus(node.gateway.spec, "[%d]" % (len(ids)))
         if self.sched.collection_is_completed:
