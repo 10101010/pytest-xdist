@@ -265,13 +265,15 @@ class DedicatedLoadScheduling(object):
                 node.shutdown()
 
     def _send_tests(self, node, num):
-        if node == self.reserved_node and self.pending_singles:
+        self.thread_safe_pendings = list(set(self.pending) - set(self.pending_singles))
+
+        if node == self.reserved_node and not self.thread_safe_pendings:
             tests_per_node = self.pending_singles[:num]
         else:
-            tests_per_node = list(set(self.pending) - set(self.pending_singles))[:num]
+            tests_per_node = self.thread_safe_pendings[:num]
 
         self.pending_singles = list(set(self.pending_singles) - set(tests_per_node))
-        self.pending = list(set(self.pending) - set(tests_per_node))
+        self.pending = list(set(self.pending) - set(tests_per_node))    
 
         self.node2pending[node].extend(tests_per_node)
         node.send_runtest_some(tests_per_node)
